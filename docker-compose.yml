@@ -1,0 +1,61 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    ports:
+      - "8000:8000"
+    environment:
+      GALLERY_DATABASE_URL: postgresql+asyncpg://gallery:gallery@db:5432/comfy_gallery
+      GALLERY_MEDIA_ROOT: /media
+      GALLERY_THUMBNAIL_DIR: /thumbnails
+      GALLERY_CORS_ORIGINS: '["http://localhost:3000","http://localhost:5173"]'
+    volumes:
+      - ./backend:/app
+      - ${MEDIA_ROOT:-./sample-media}:/media:ro
+      - thumbnails:/thumbnails
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gallery
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+    networks:
+      - gallery
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: comfy_gallery
+      POSTGRES_USER: gallery
+      POSTGRES_PASSWORD: gallery
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gallery -d comfy_gallery"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gallery
+
+volumes:
+  pgdata:
+  thumbnails:
+
+networks:
+  gallery:
+    driver: bridge
