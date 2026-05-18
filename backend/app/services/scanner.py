@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,14 +26,48 @@ logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 
+# Log progress every N files or every N seconds, whichever comes first
+_PROGRESS_LOG_INTERVAL_FILES = 50
+_PROGRESS_LOG_INTERVAL_SECONDS = 5.0
+
+
 def discover_media_files(root: str) -> list[Path]:
     """Recursively walk root directory and return all supported media files."""
+    logger.info("Discovering media files in %s …", root)
     media_files: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(root):
         for filename in filenames:
             if Path(filename).suffix.lower() in SUPPORTED_EXTENSIONS:
                 media_files.append(Path(dirpath) / filename)
     return sorted(media_files)
+
+
+def _should_log_progress(
+    idx: int, total: int, now: float, last_log_time: float
+) -> bool:
+    """Return True when it's time to emit a progress log line."""
+    if idx == total:
+        return True
+    if idx % _PROGRESS_LOG_INTERVAL_FILES == 0:
+        return True
+    if now - last_log_time >= _PROGRESS_LOG_INTERVAL_SECONDS:
+        return True
+    return False
+
+
+def _log_progress(idx: int, total: int, stats: dict, skipped: int) -> None:
+    pct = idx * 100 // total if total else 0
+    logger.info(
+        "Scan progress: %d/%d files (%d%%) "
+        "[new=%d, updated=%d, skipped=%d, errors=%d]",
+        idx,
+        total,
+        pct,
+        stats["new"],
+        stats["updated"],
+        skipped,
+        stats["errors"],
+    )
 
 
 async def scan_and_ingest(db: AsyncSession) -> dict:
@@ -43,13 +78,17 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
     discovered = discover_media_files(media_root)
     logger.info("Discovered %d media files", len(discovered))
 
-    stats = {"discovered": len(discovered), "new": 0, "updated": 0, "errors": 0}
+    total = len(discovered)
+    stats = {"discovered": total, "new": 0, "updated": 0, "errors": 0}
 
     existing_query = select(MediaFile)
     result = await db.execute(existing_query)
     existing_records = {m.file_path: m for m in result.scalars().all()}
 
-    for file_path in discovered:
+    skipped = 0
+    last_log_time = time.monotonic()
+
+    for idx, file_path in enumerate(discovered, start=1):
         try:
             relative_path = str(file_path.relative_to(media_root))
             stat = file_path.stat()
@@ -58,6 +97,11 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
             existing = existing_records.get(relative_path)
             if existing is not None:
                 if existing.file_modified_at and existing.file_modified_at >= file_mtime:
+                    skipped += 1
+                    now = time.monotonic()
+                    if _should_log_progress(idx, total, now, last_log_time):
+                        _log_progress(idx, total, stats, skipped)
+                        last_log_time = now
                     continue
                 # File has been modified — update it
                 prompt, workflow = extract_metadata(file_path)
@@ -133,6 +177,15 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
             logger.error("Error processing %s", file_path, exc_info=True)
             stats["errors"] += 1
 
+        now = time.monotonic()
+        if _should_log_progress(idx, total, now, last_log_time):
+            _log_progress(idx, total, stats, skipped)
+            last_log_time = now
+
     await db.commit()
-    logger.info("Scan complete: %s", stats)
+    logger.info(
+        "Scan complete: %d files processed "
+        "[new=%d, updated=%d, skipped=%d, errors=%d]",
+        total, stats["new"], stats["updated"], skipped, stats["errors"],
+    )
     return stats
