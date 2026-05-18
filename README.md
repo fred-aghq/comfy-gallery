@@ -70,6 +70,16 @@ docker compose up
 - **Backend API**: [http://localhost:8000](http://localhost:8000) (FastAPI with auto-reload)
 - **API docs**: [http://localhost:8000/docs](http://localhost:8000/docs) (Swagger UI)
 
+### Running Backend Tests
+
+The backend has a test suite covering metadata extraction, file scanning, thumbnails, and API routes. Tests use in-memory SQLite so they run without Docker or PostgreSQL:
+
+```bash
+cd backend
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
 ### Project Structure
 
 ```
