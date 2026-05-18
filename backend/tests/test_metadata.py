@@ -1,9 +1,11 @@
 """Tests for app.services.metadata — extraction and parsing of ComfyUI metadata."""
 
 import json
+import math
 from unittest.mock import patch
 
 from app.services.metadata import (
+    _sanitize_json,
     extract_jpeg_webp_metadata,
     extract_metadata,
     extract_png_metadata,
@@ -382,3 +384,67 @@ class TestGetDimensions:
         w, h = get_video_dimensions(f)
         assert w is None
         assert h is None
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_json
+# ---------------------------------------------------------------------------
+
+class TestSanitizeJson:
+    def test_nan_replaced(self):
+        assert _sanitize_json(float("nan")) is None
+
+    def test_inf_replaced(self):
+        assert _sanitize_json(float("inf")) is None
+        assert _sanitize_json(float("-inf")) is None
+
+    def test_normal_float_preserved(self):
+        assert _sanitize_json(3.14) == 3.14
+
+    def test_nested_dict(self):
+        data = {"a": 1, "b": float("nan"), "c": {"d": float("inf"), "e": "ok"}}
+        result = _sanitize_json(data)
+        assert result == {"a": 1, "b": None, "c": {"d": None, "e": "ok"}}
+
+    def test_nested_list(self):
+        data = [1, float("nan"), [float("-inf"), "hello"]]
+        result = _sanitize_json(data)
+        assert result == [1, None, [None, "hello"]]
+
+    def test_none_passthrough(self):
+        assert _sanitize_json(None) is None
+
+    def test_string_passthrough(self):
+        assert _sanitize_json("NaN") == "NaN"
+
+    def test_large_workflow_with_nan(self):
+        """Simulate a ComfyUI workflow containing NaN values."""
+        workflow = {
+            "nodes": [
+                {"id": 1, "pos": [float("nan"), 100.0]},
+                {"id": 2, "pos": [200.0, float("inf")]},
+            ],
+            "version": 0.4,
+        }
+        result = _sanitize_json(workflow)
+        assert result["nodes"][0]["pos"] == [None, 100.0]
+        assert result["nodes"][1]["pos"] == [200.0, None]
+        assert result["version"] == 0.4
+
+    def test_png_with_nan_in_workflow(self, tmp_path):
+        """Ensure extract_png_metadata sanitizes NaN values."""
+        from PIL import Image
+        from PIL.PngImagePlugin import PngInfo
+
+        info = PngInfo()
+        # Python's json.dumps produces "NaN" for float('nan')
+        prompt_data = '{"1": {"inputs": {"value": NaN}}}'
+        workflow_data = '{"nodes": [{"pos": [NaN, Infinity]}]}'
+        info.add_text("prompt", prompt_data)
+        info.add_text("workflow", workflow_data)
+        img_path = tmp_path / "nan_test.png"
+        Image.new("RGB", (10, 10)).save(img_path, pnginfo=info)
+
+        prompt, workflow = extract_png_metadata(img_path)
+        assert prompt == {"1": {"inputs": {"value": None}}}
+        assert workflow == {"nodes": [{"pos": [None, None]}]}
