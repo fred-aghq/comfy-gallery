@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import subprocess
 from pathlib import Path
 
@@ -13,6 +14,21 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".avi", ".mkv"}
 
 
+def _sanitize_json(obj: object) -> object:
+    """Recursively replace NaN/Infinity floats with None for JSONB compatibility.
+
+    ComfyUI workflows may contain non-standard JSON values (NaN, Infinity)
+    which Python's json.loads accepts but PostgreSQL JSONB rejects.
+    """
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json(item) for item in obj]
+    return obj
+
+
 def extract_png_metadata(file_path: Path) -> tuple[dict | None, dict | None]:
     """Extract prompt and workflow JSON from PNG tEXt chunks."""
     try:
@@ -21,7 +37,7 @@ def extract_png_metadata(file_path: Path) -> tuple[dict | None, dict | None]:
             workflow_raw = img.info.get("workflow")
             prompt = json.loads(prompt_raw) if prompt_raw else None
             workflow = json.loads(workflow_raw) if workflow_raw else None
-            return prompt, workflow
+            return _sanitize_json(prompt), _sanitize_json(workflow)
     except Exception:
         logger.debug("Failed to extract PNG metadata from %s", file_path, exc_info=True)
         return None, None
@@ -33,7 +49,7 @@ def extract_jpeg_webp_metadata(file_path: Path) -> tuple[dict | None, dict | Non
     if sidecar.exists():
         try:
             data = json.loads(sidecar.read_text(encoding="utf-8"))
-            return data.get("prompt"), data.get("workflow")
+            return _sanitize_json(data.get("prompt")), _sanitize_json(data.get("workflow"))
         except Exception:
             logger.debug("Failed to read sidecar JSON %s", sidecar, exc_info=True)
 
@@ -43,7 +59,10 @@ def extract_jpeg_webp_metadata(file_path: Path) -> tuple[dict | None, dict | Non
             user_comment = exif.get(0x9286)  # UserComment tag
             if user_comment:
                 data = json.loads(user_comment)
-                return data.get("prompt"), data.get("workflow")
+                return (
+                    _sanitize_json(data.get("prompt")),
+                    _sanitize_json(data.get("workflow")),
+                )
     except Exception:
         logger.debug("Failed to extract EXIF metadata from %s", file_path, exc_info=True)
 
@@ -56,7 +75,7 @@ def extract_video_metadata(file_path: Path) -> tuple[dict | None, dict | None]:
     if sidecar.exists():
         try:
             data = json.loads(sidecar.read_text(encoding="utf-8"))
-            return data.get("prompt"), data.get("workflow")
+            return _sanitize_json(data.get("prompt")), _sanitize_json(data.get("workflow"))
         except Exception:
             logger.debug("Failed to read sidecar JSON %s", sidecar, exc_info=True)
 
@@ -81,7 +100,10 @@ def extract_video_metadata(file_path: Path) -> tuple[dict | None, dict | None]:
                 try:
                     data = json.loads(comment)
                     if isinstance(data, dict):
-                        return data.get("prompt"), data.get("workflow")
+                        return (
+                            _sanitize_json(data.get("prompt")),
+                            _sanitize_json(data.get("workflow")),
+                        )
                 except json.JSONDecodeError:
                     pass
     except Exception:
