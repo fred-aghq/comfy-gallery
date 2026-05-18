@@ -102,6 +102,47 @@ def extract_metadata(file_path: Path) -> tuple[dict | None, dict | None]:
     return None, None
 
 
+def _resolve_input(value, prompt_data: dict) -> object:
+    """Resolve a node input value, following node references if needed.
+
+    In ComfyUI prompt JSON, inputs that come from other nodes are stored
+    as [node_id, output_index] lists. This helper follows one level of
+    reference to try to retrieve the underlying scalar value.
+    """
+    if not isinstance(value, list) or len(value) != 2:
+        return value
+    ref_node_id, _output_index = value
+    ref_node = prompt_data.get(str(ref_node_id), {})
+    ref_inputs = ref_node.get("inputs", {}) if isinstance(ref_node, dict) else {}
+    for key in ("seed", "noise_seed", "value", "Value", "SEED"):
+        v = ref_inputs.get(key)
+        if v is not None and not isinstance(v, list):
+            return v
+    return None
+
+
+def _safe_int(value, prompt_data: dict) -> int | None:
+    """Convert a node input to int, resolving references and ignoring bad types."""
+    resolved = _resolve_input(value, prompt_data)
+    if resolved is None:
+        return None
+    try:
+        return int(resolved)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(value, prompt_data: dict) -> float | None:
+    """Convert a node input to float, resolving references and ignoring bad types."""
+    resolved = _resolve_input(value, prompt_data)
+    if resolved is None:
+        return None
+    try:
+        return float(resolved)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_searchable_fields(prompt_data: dict | None) -> dict:
     """Extract searchable fields from the ComfyUI prompt JSON.
 
@@ -145,15 +186,15 @@ def parse_searchable_fields(prompt_data: dict | None) -> dict:
             if fields["cfg_scale"] is None:
                 cfg = inputs.get("cfg")
                 if cfg is not None:
-                    fields["cfg_scale"] = float(cfg)
+                    fields["cfg_scale"] = _safe_float(cfg, prompt_data)
             if fields["steps"] is None:
                 steps = inputs.get("steps")
                 if steps is not None:
-                    fields["steps"] = int(steps)
+                    fields["steps"] = _safe_int(steps, prompt_data)
             if fields["seed"] is None:
                 seed = inputs.get("seed") or inputs.get("noise_seed")
                 if seed is not None:
-                    fields["seed"] = int(seed)
+                    fields["seed"] = _safe_int(seed, prompt_data)
 
         if class_type in ("CLIPTextEncode",):
             text = inputs.get("text", "")
