@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,14 +19,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Create tables on startup
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables created")
-
-    # Run initial scan
+async def _run_initial_scan() -> None:
+    """Run the initial media scan as a background task."""
     async with async_session() as db:
         try:
             stats = await scan_and_ingest(db)
@@ -33,8 +28,24 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.error("Initial scan failed", exc_info=True)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Create tables on startup
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database tables created")
+
+    # Run initial scan in background so the server can start accepting requests
+    scan_task = asyncio.create_task(_run_initial_scan())
+
     yield
 
+    scan_task.cancel()
+    try:
+        await scan_task
+    except asyncio.CancelledError:
+        pass
     await engine.dispose()
 
 

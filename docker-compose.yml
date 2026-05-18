@@ -17,6 +17,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     networks:
       - gallery
 
@@ -31,6 +37,9 @@ services:
       - /app/node_modules
     environment:
       - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      backend:
+        condition: service_healthy
     networks:
       - gallery
 
