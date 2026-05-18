@@ -1,5 +1,6 @@
 """Folder scanner service — discovers media files and ingests them into the database."""
 
+import asyncio
 import logging
 import os
 import time
@@ -70,12 +71,35 @@ def _log_progress(idx: int, total: int, stats: dict, skipped: int) -> None:
     )
 
 
+def _process_file(file_path: Path) -> dict:
+    """Extract metadata & dimensions and generate thumbnail (sync, CPU/IO-bound)."""
+    ext = file_path.suffix.lower()
+    media_type = MediaType.IMAGE if ext in IMAGE_EXTENSIONS else MediaType.VIDEO
+    prompt, workflow = extract_metadata(file_path)
+    searchable = parse_searchable_fields(prompt)
+    if media_type == MediaType.IMAGE:
+        width, height = get_image_dimensions(file_path)
+    else:
+        width, height = get_video_dimensions(file_path)
+    thumbnail_path = generate_thumbnail(file_path, media_type)
+    return {
+        "ext": ext,
+        "media_type": media_type,
+        "prompt": prompt,
+        "workflow": workflow,
+        "searchable": searchable,
+        "width": width,
+        "height": height,
+        "thumbnail_path": thumbnail_path,
+    }
+
+
 async def scan_and_ingest(db: AsyncSession) -> dict:
     """Scan the media root, extract metadata, and upsert into the database."""
     media_root = settings.media_root
     logger.info("Starting scan of %s", media_root)
 
-    discovered = discover_media_files(media_root)
+    discovered = await asyncio.to_thread(discover_media_files, media_root)
     logger.info("Discovered %d media files", len(discovered))
 
     total = len(discovered)
@@ -91,7 +115,7 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
     for idx, file_path in enumerate(discovered, start=1):
         try:
             relative_path = str(file_path.relative_to(media_root))
-            stat = file_path.stat()
+            stat = await asyncio.to_thread(file_path.stat)
             file_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
 
             existing = existing_records.get(relative_path)
@@ -103,69 +127,50 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
                         _log_progress(idx, total, stats, skipped)
                         last_log_time = now
                     continue
-                # File has been modified — update it
-                prompt, workflow = extract_metadata(file_path)
-                searchable = parse_searchable_fields(prompt)
-                ext = file_path.suffix.lower()
-                media_type = MediaType.IMAGE if ext in IMAGE_EXTENSIONS else MediaType.VIDEO
-                if media_type == MediaType.IMAGE:
-                    width, height = get_image_dimensions(file_path)
-                else:
-                    width, height = get_video_dimensions(file_path)
-                thumbnail_path = generate_thumbnail(file_path, media_type)
+                # File has been modified — re-process it
+                info = await asyncio.to_thread(_process_file, file_path)
 
                 existing.file_size = stat.st_size
-                existing.width = width
-                existing.height = height
-                existing.thumbnail_path = thumbnail_path
-                existing.metadata_prompt = prompt
-                existing.metadata_workflow = workflow
-                existing.checkpoint_name = searchable["checkpoint_name"]
-                existing.positive_prompt = searchable["positive_prompt"]
-                existing.negative_prompt = searchable["negative_prompt"]
-                existing.sampler_name = searchable["sampler_name"]
-                existing.scheduler = searchable["scheduler"]
-                existing.cfg_scale = searchable["cfg_scale"]
-                existing.steps = searchable["steps"]
-                existing.seed = searchable["seed"]
-                existing.lora_names = searchable["lora_names"]
+                existing.width = info["width"]
+                existing.height = info["height"]
+                existing.thumbnail_path = info["thumbnail_path"]
+                existing.metadata_prompt = info["prompt"]
+                existing.metadata_workflow = info["workflow"]
+                existing.checkpoint_name = info["searchable"]["checkpoint_name"]
+                existing.positive_prompt = info["searchable"]["positive_prompt"]
+                existing.negative_prompt = info["searchable"]["negative_prompt"]
+                existing.sampler_name = info["searchable"]["sampler_name"]
+                existing.scheduler = info["searchable"]["scheduler"]
+                existing.cfg_scale = info["searchable"]["cfg_scale"]
+                existing.steps = info["searchable"]["steps"]
+                existing.seed = info["searchable"]["seed"]
+                existing.lora_names = info["searchable"]["lora_names"]
                 existing.file_modified_at = file_mtime
                 stats["updated"] += 1
                 continue
 
-            ext = file_path.suffix.lower()
-            media_type = MediaType.IMAGE if ext in IMAGE_EXTENSIONS else MediaType.VIDEO
-
-            prompt, workflow = extract_metadata(file_path)
-            searchable = parse_searchable_fields(prompt)
-
-            if media_type == MediaType.IMAGE:
-                width, height = get_image_dimensions(file_path)
-            else:
-                width, height = get_video_dimensions(file_path)
-
-            thumbnail_path = generate_thumbnail(file_path, media_type)
+            info = await asyncio.to_thread(_process_file, file_path)
 
             media_file = MediaFile(
                 file_path=relative_path,
                 file_name=file_path.name,
-                file_extension=ext,
-                media_type=media_type,
+                file_extension=info["ext"],
+                media_type=info["media_type"],
                 file_size=stat.st_size,
-                width=width,
-                height=height,
-                thumbnail_path=thumbnail_path,
-                metadata_prompt=prompt,
-                metadata_workflow=workflow,
-                checkpoint_name=searchable["checkpoint_name"],
-                positive_prompt=searchable["positive_prompt"],
-                negative_prompt=searchable["negative_prompt"],
-                sampler_name=searchable["sampler_name"],
-                scheduler=searchable["scheduler"],
-                cfg_scale=searchable["cfg_scale"],
-                steps=searchable["steps"],
-                seed=searchable["seed"],
-                lora_names=searchable["lora_names"],
+                width=info["width"],
+                height=info["height"],
+                thumbnail_path=info["thumbnail_path"],
+                metadata_prompt=info["prompt"],
+                metadata_workflow=info["workflow"],
+                checkpoint_name=info["searchable"]["checkpoint_name"],
+                positive_prompt=info["searchable"]["positive_prompt"],
+                negative_prompt=info["searchable"]["negative_prompt"],
+                sampler_name=info["searchable"]["sampler_name"],
+                scheduler=info["searchable"]["scheduler"],
+                cfg_scale=info["searchable"]["cfg_scale"],
+                steps=info["searchable"]["steps"],
+                seed=info["searchable"]["seed"],
+                lora_names=info["searchable"]["lora_names"],
                 file_created_at=datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc),
                 file_modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
             )
