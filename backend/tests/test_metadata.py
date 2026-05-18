@@ -1,10 +1,11 @@
 """Tests for app.services.metadata — extraction and parsing of ComfyUI metadata."""
 
 import json
-import math
 from unittest.mock import patch
 
 from app.services.metadata import (
+    _collect_conditioning_sources,
+    _resolve_text,
     _sanitize_json,
     extract_jpeg_webp_metadata,
     extract_metadata,
@@ -253,8 +254,14 @@ class TestParseSearchableFields:
         assert fields["seed"] == 721897303308196
         assert fields["positive_prompt"] is not None
         assert "evening sunset scenery" in fields["positive_prompt"]
+        # Negative prompt is now correctly classified via KSampler connections
+        assert fields["negative_prompt"] is not None
+        assert "text, watermark" in fields["negative_prompt"]
+        # Duplicate prompts from base+refiner passes are deduplicated
+        assert fields["positive_prompt"].count("evening sunset scenery") == 1
 
     def test_multiple_clip_text_nodes(self):
+        """Without KSampler connections, CLIPTextEncode nodes use fallback (positive)."""
         prompt = {
             "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "prompt one"}},
             "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "prompt two"}},
@@ -319,11 +326,126 @@ class TestParseSearchableFields:
         assert fields["seed"] == 12345
 
     def test_negative_prompt_nodes(self):
+        """CLIPTextEncodeNegative class_type fallback still works without KSampler."""
         prompt = {
             "1": {"class_type": "CLIPTextEncodeNegative", "inputs": {"text": "bad quality"}},
         }
         fields = parse_searchable_fields(prompt)
         assert fields["negative_prompt"] == "bad quality"
+
+    def test_ksampler_positive_negative_classification(self):
+        """CLIPTextEncode nodes are classified via KSampler connections."""
+        prompt = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "beautiful scenery"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "ugly, blurry"}},
+            "3": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": 42, "steps": 20, "cfg": 7.0,
+                    "sampler_name": "euler", "scheduler": "normal",
+                    "positive": ["1", 0],
+                    "negative": ["2", 0],
+                },
+            },
+        }
+        fields = parse_searchable_fields(prompt)
+        assert fields["positive_prompt"] == "beautiful scenery"
+        assert fields["negative_prompt"] == "ugly, blurry"
+
+    def test_text_from_string_node(self):
+        """CLIPTextEncode text input referencing a String node is resolved."""
+        prompt = {
+            "1": {"class_type": "String", "inputs": {"string": "a cat sitting on a mat"}},
+            "2": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": ["1", 0], "clip": ["4", 1]},
+            },
+            "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "bad quality"}},
+            "4": {
+                "class_type": "CheckpointLoaderSimple",
+                "inputs": {"ckpt_name": "model.safetensors"},
+            },
+            "5": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": 1, "steps": 20, "cfg": 7.0,
+                    "sampler_name": "euler", "scheduler": "normal",
+                    "positive": ["2", 0],
+                    "negative": ["3", 0],
+                },
+            },
+        }
+        fields = parse_searchable_fields(prompt)
+        assert fields["positive_prompt"] == "a cat sitting on a mat"
+        assert fields["negative_prompt"] == "bad quality"
+
+    def test_text_from_chained_string_nodes(self):
+        """References through multiple nodes are resolved recursively."""
+        prompt = {
+            "1": {"class_type": "StringLiteral", "inputs": {"value": "deep prompt"}},
+            "2": {"class_type": "StringPassthrough", "inputs": {"string": ["1", 0]}},
+            "3": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": ["2", 0], "clip": ["5", 1]},
+            },
+            "4": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": 1, "steps": 20, "cfg": 7.0,
+                    "sampler_name": "euler", "scheduler": "normal",
+                    "positive": ["3", 0],
+                    "negative": ["3", 0],
+                },
+            },
+            "5": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m.safetensors"}},
+        }
+        fields = parse_searchable_fields(prompt)
+        assert fields["positive_prompt"] == "deep prompt"
+
+    def test_duplicate_prompts_deduplicated(self):
+        """Identical prompts from multiple KSampler passes are deduplicated."""
+        prompt = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "same prompt"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "same prompt"}},
+            "3": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": 1, "steps": 20, "cfg": 7.0,
+                    "sampler_name": "euler", "scheduler": "normal",
+                    "positive": ["1", 0],
+                    "negative": ["2", 0],
+                },
+            },
+        }
+        fields = parse_searchable_fields(prompt)
+        # "same prompt" appears both as positive and negative
+        assert fields["positive_prompt"] == "same prompt"
+        assert fields["negative_prompt"] == "same prompt"
+
+    def test_conditioning_combine_traced(self):
+        """Conditioning nodes between CLIPTextEncode and KSampler are traversed."""
+        prompt = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "prompt A"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "prompt B"}},
+            "3": {
+                "class_type": "ConditioningCombine",
+                "inputs": {"conditioning_1": ["1", 0], "conditioning_2": ["2", 0]},
+            },
+            "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "bad"}},
+            "5": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": 1, "steps": 20, "cfg": 7.0,
+                    "sampler_name": "euler", "scheduler": "normal",
+                    "positive": ["3", 0],
+                    "negative": ["4", 0],
+                },
+            },
+        }
+        fields = parse_searchable_fields(prompt)
+        assert "prompt A" in fields["positive_prompt"]
+        assert "prompt B" in fields["positive_prompt"]
+        assert fields["negative_prompt"] == "bad"
 
     def test_empty_text_skipped(self):
         prompt = {
@@ -332,6 +454,102 @@ class TestParseSearchableFields:
         }
         fields = parse_searchable_fields(prompt)
         assert fields["positive_prompt"] is None
+
+
+# ---------------------------------------------------------------------------
+# _resolve_text
+# ---------------------------------------------------------------------------
+
+class TestResolveText:
+    def test_literal_string(self):
+        assert _resolve_text("hello", {}) == "hello"
+
+    def test_none_returns_none(self):
+        assert _resolve_text(None, {}) is None
+
+    def test_empty_string(self):
+        assert _resolve_text("", {}) == ""
+
+    def test_reference_to_string_node(self):
+        prompt = {
+            "1": {"class_type": "String", "inputs": {"string": "resolved text"}},
+        }
+        assert _resolve_text(["1", 0], prompt) == "resolved text"
+
+    def test_reference_to_text_key(self):
+        prompt = {
+            "1": {"class_type": "Note", "inputs": {"text": "note content"}},
+        }
+        assert _resolve_text(["1", 0], prompt) == "note content"
+
+    def test_reference_to_value_key(self):
+        prompt = {
+            "1": {"class_type": "Primitive", "inputs": {"value": "prim value"}},
+        }
+        assert _resolve_text(["1", 0], prompt) == "prim value"
+
+    def test_chained_references(self):
+        prompt = {
+            "1": {"class_type": "StringLiteral", "inputs": {"string": "final"}},
+            "2": {"class_type": "Reroute", "inputs": {"string": ["1", 0]}},
+        }
+        assert _resolve_text(["2", 0], prompt) == "final"
+
+    def test_max_depth_guard(self):
+        # Create a circular reference
+        prompt = {
+            "1": {"class_type": "A", "inputs": {"string": ["2", 0]}},
+            "2": {"class_type": "B", "inputs": {"string": ["1", 0]}},
+        }
+        assert _resolve_text(["1", 0], prompt) is None
+
+    def test_missing_node(self):
+        assert _resolve_text(["999", 0], {}) is None
+
+    def test_non_dict_node(self):
+        prompt = {"1": "not a dict"}
+        assert _resolve_text(["1", 0], prompt) is None
+
+
+# ---------------------------------------------------------------------------
+# _collect_conditioning_sources
+# ---------------------------------------------------------------------------
+
+class TestCollectConditioningSources:
+    def test_direct_clip_text_encode(self):
+        prompt = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "hi"}},
+        }
+        result = _collect_conditioning_sources(["1", 0], prompt)
+        assert result == {"1"}
+
+    def test_through_conditioning_combine(self):
+        prompt = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "b"}},
+            "3": {
+                "class_type": "ConditioningCombine",
+                "inputs": {"conditioning_1": ["1", 0], "conditioning_2": ["2", 0]},
+            },
+        }
+        result = _collect_conditioning_sources(["3", 0], prompt)
+        assert result == {"1", "2"}
+
+    def test_missing_node_returns_empty(self):
+        result = _collect_conditioning_sources(["999", 0], {})
+        assert result == set()
+
+    def test_non_list_returns_empty(self):
+        result = _collect_conditioning_sources("not_a_ref", {})
+        assert result == set()
+
+    def test_circular_reference_safe(self):
+        prompt = {
+            "1": {"class_type": "CondA", "inputs": {"cond": ["2", 0]}},
+            "2": {"class_type": "CondB", "inputs": {"cond": ["1", 0]}},
+        }
+        result = _collect_conditioning_sources(["1", 0], prompt)
+        assert result == set()
 
 
 # ---------------------------------------------------------------------------
