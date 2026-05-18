@@ -1,7 +1,8 @@
+import json
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class MediaFileResponse(BaseModel):
@@ -33,6 +34,19 @@ class MediaFileResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("metadata_prompt", "metadata_workflow", mode="before")
+    @classmethod
+    def _parse_json_string(cls, v: object) -> dict[str, Any] | None:
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+            return None
+        return v
 
 
 class PaginationMeta(BaseModel):
