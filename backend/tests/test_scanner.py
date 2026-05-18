@@ -128,6 +128,66 @@ class TestScanAndIngest:
         assert stats["new"] == 1
         assert stats["errors"] == 0
 
+    async def test_scan_continues_after_error(self, db_session, media_with_sample):
+        """When one file raises, the scanner skips it and processes the rest."""
+        from PIL import Image
+
+        from app.services.scanner import scan_and_ingest
+
+        # Add a second valid image
+        Image.new("RGB", (50, 50), "red").save(media_with_sample / "good.png")
+
+        call_count = 0
+        original_extract = __import__(
+            "app.services.metadata", fromlist=["extract_metadata"]
+        ).extract_metadata
+
+        def _bomb_on_first(fp):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("simulated corruption")
+            return original_extract(fp)
+
+        with (
+            patch("app.services.scanner.settings") as mock_settings,
+            patch("app.services.scanner.extract_metadata", side_effect=_bomb_on_first),
+        ):
+            mock_settings.media_root = str(media_with_sample)
+            mock_settings.thumbnail_dir = str(media_with_sample / "thumbs")
+            mock_settings.thumbnail_size = 400
+            stats = await scan_and_ingest(db_session)
+
+        assert stats["errors"] == 1
+        assert stats["new"] == 1
+        assert len(stats["error_details"]) == 1
+        assert "simulated corruption" in stats["error_details"][0]["error"]
+
+    async def test_scan_error_details_contain_file_path(self, db_session, tmp_media_dir):
+        """error_details entries include the file path and error message."""
+        from app.services.scanner import scan_and_ingest
+
+        (tmp_media_dir / "bad.png").write_bytes(b"\x89PNG")
+
+        with (
+            patch("app.services.scanner.settings") as mock_settings,
+            patch(
+                "app.services.scanner.extract_metadata",
+                side_effect=ValueError("bad value"),
+            ),
+        ):
+            mock_settings.media_root = str(tmp_media_dir)
+            mock_settings.thumbnail_dir = str(tmp_media_dir / "thumbs")
+            mock_settings.thumbnail_size = 400
+            stats = await scan_and_ingest(db_session)
+
+        assert stats["errors"] == 1
+        assert stats["new"] == 0
+        detail = stats["error_details"][0]
+        assert "bad.png" in detail["file"]
+        assert "ValueError" in detail["error"]
+        assert "bad value" in detail["error"]
+
     async def test_scan_adds_new_file_on_rescan(self, db_session, media_with_sample):
         from app.services.scanner import scan_and_ingest
 
