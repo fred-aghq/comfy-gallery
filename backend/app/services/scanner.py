@@ -79,7 +79,13 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
     logger.info("Discovered %d media files", len(discovered))
 
     total = len(discovered)
-    stats = {"discovered": total, "new": 0, "updated": 0, "errors": 0}
+    stats: dict = {
+        "discovered": total,
+        "new": 0,
+        "updated": 0,
+        "errors": 0,
+        "error_details": [],
+    }
 
     existing_query = select(MediaFile)
     result = await db.execute(existing_query)
@@ -114,22 +120,23 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
                     width, height = get_video_dimensions(file_path)
                 thumbnail_path = generate_thumbnail(file_path, media_type)
 
-                existing.file_size = stat.st_size
-                existing.width = width
-                existing.height = height
-                existing.thumbnail_path = thumbnail_path
-                existing.metadata_prompt = prompt
-                existing.metadata_workflow = workflow
-                existing.checkpoint_name = searchable["checkpoint_name"]
-                existing.positive_prompt = searchable["positive_prompt"]
-                existing.negative_prompt = searchable["negative_prompt"]
-                existing.sampler_name = searchable["sampler_name"]
-                existing.scheduler = searchable["scheduler"]
-                existing.cfg_scale = searchable["cfg_scale"]
-                existing.steps = searchable["steps"]
-                existing.seed = searchable["seed"]
-                existing.lora_names = searchable["lora_names"]
-                existing.file_modified_at = file_mtime
+                async with db.begin_nested():
+                    existing.file_size = stat.st_size
+                    existing.width = width
+                    existing.height = height
+                    existing.thumbnail_path = thumbnail_path
+                    existing.metadata_prompt = prompt
+                    existing.metadata_workflow = workflow
+                    existing.checkpoint_name = searchable["checkpoint_name"]
+                    existing.positive_prompt = searchable["positive_prompt"]
+                    existing.negative_prompt = searchable["negative_prompt"]
+                    existing.sampler_name = searchable["sampler_name"]
+                    existing.scheduler = searchable["scheduler"]
+                    existing.cfg_scale = searchable["cfg_scale"]
+                    existing.steps = searchable["steps"]
+                    existing.seed = searchable["seed"]
+                    existing.lora_names = searchable["lora_names"]
+                    existing.file_modified_at = file_mtime
                 stats["updated"] += 1
                 continue
 
@@ -170,12 +177,19 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
                 file_modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
             )
 
-            db.add(media_file)
+            async with db.begin_nested():
+                db.add(media_file)
             stats["new"] += 1
 
-        except Exception:
-            logger.error("Error processing %s", file_path, exc_info=True)
+        except Exception as exc:
+            error_msg = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "Skipping %s — %s", file_path, error_msg, exc_info=True,
+            )
             stats["errors"] += 1
+            stats["error_details"].append(
+                {"file": str(file_path), "error": error_msg}
+            )
 
         now = time.monotonic()
         if _should_log_progress(idx, total, now, last_log_time):
