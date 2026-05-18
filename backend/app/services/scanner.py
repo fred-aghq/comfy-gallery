@@ -45,16 +45,48 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
 
     stats = {"discovered": len(discovered), "new": 0, "updated": 0, "errors": 0}
 
-    existing_query = select(MediaFile.file_path)
+    existing_query = select(MediaFile)
     result = await db.execute(existing_query)
-    existing_paths = {row[0] for row in result.fetchall()}
+    existing_records = {m.file_path: m for m in result.scalars().all()}
 
     for file_path in discovered:
         try:
             relative_path = str(file_path.relative_to(media_root))
             stat = file_path.stat()
+            file_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
 
-            if relative_path in existing_paths:
+            existing = existing_records.get(relative_path)
+            if existing is not None:
+                if existing.file_modified_at and existing.file_modified_at >= file_mtime:
+                    continue
+                # File has been modified — update it
+                prompt, workflow = extract_metadata(file_path)
+                searchable = parse_searchable_fields(prompt)
+                ext = file_path.suffix.lower()
+                media_type = MediaType.IMAGE if ext in IMAGE_EXTENSIONS else MediaType.VIDEO
+                if media_type == MediaType.IMAGE:
+                    width, height = get_image_dimensions(file_path)
+                else:
+                    width, height = get_video_dimensions(file_path)
+                thumbnail_path = generate_thumbnail(file_path, media_type)
+
+                existing.file_size = stat.st_size
+                existing.width = width
+                existing.height = height
+                existing.thumbnail_path = thumbnail_path
+                existing.metadata_prompt = prompt
+                existing.metadata_workflow = workflow
+                existing.checkpoint_name = searchable["checkpoint_name"]
+                existing.positive_prompt = searchable["positive_prompt"]
+                existing.negative_prompt = searchable["negative_prompt"]
+                existing.sampler_name = searchable["sampler_name"]
+                existing.scheduler = searchable["scheduler"]
+                existing.cfg_scale = searchable["cfg_scale"]
+                existing.steps = searchable["steps"]
+                existing.seed = searchable["seed"]
+                existing.lora_names = searchable["lora_names"]
+                existing.file_modified_at = file_mtime
+                stats["updated"] += 1
                 continue
 
             ext = file_path.suffix.lower()

@@ -1,6 +1,6 @@
 import math
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -114,7 +114,9 @@ async def list_media(
 @router.get("/{media_id}", response_model=MediaFileResponse)
 async def get_media(media_id: int, db: AsyncSession = Depends(get_db)) -> MediaFileResponse:
     result = await db.execute(select(MediaFile).where(MediaFile.id == media_id))
-    media = result.scalar_one()
+    media = result.scalar_one_or_none()
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
     return _to_response(media)
 
 

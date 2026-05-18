@@ -64,7 +64,14 @@ app.mount("/api/thumbnails", StaticFiles(directory=str(thumbnail_dir)), name="th
 @app.get("/api/media/file/{file_path:path}")
 async def serve_media_file(file_path: str) -> FileResponse:
     """Serve the actual media file for the viewer."""
-    full_path = Path(settings.media_root) / file_path
+    from fastapi import HTTPException
+
+    media_root = Path(settings.media_root).resolve()
+    full_path = (media_root / file_path).resolve()
+    if not full_path.is_relative_to(media_root):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not full_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(full_path)
 
 

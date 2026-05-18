@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Enum, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -40,7 +40,7 @@ class MediaFile(Base):
     scheduler: Mapped[str | None] = mapped_column(String(128), nullable=True)
     cfg_scale: Mapped[float | None] = mapped_column(nullable=True)
     steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    seed: Mapped[int | None] = mapped_column(nullable=True)
+    seed: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     lora_names: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     file_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
