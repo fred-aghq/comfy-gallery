@@ -26,7 +26,7 @@ export default function Header({ onSearch, onScan, scanning }: HeaderProps) {
             type="text"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search prompts..."
+            placeholder="Search workflows, models, loras..."
             className="flex-1 rounded-l-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] placeholder-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
           />
           <button

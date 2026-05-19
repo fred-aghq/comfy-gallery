@@ -3,6 +3,7 @@
 import json
 import logging
 import math
+import re
 import subprocess
 from pathlib import Path
 
@@ -241,6 +242,56 @@ def parse_searchable_fields(prompt_data: dict | None) -> dict:
         fields["lora_names"] = None
 
     return fields
+
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_noise(value: str) -> bool:
+    """Return True for strings that add no search value."""
+    if len(value) < 2:
+        return True
+    if _UUID_RE.match(value):
+        return True
+    # Skip pure numbers (already covered by structured fields)
+    try:
+        float(value)
+        return True
+    except ValueError:
+        pass
+    return False
+
+
+def flatten_json_values(
+    prompt: dict | None, workflow: dict | None
+) -> str | None:
+    """Recursively extract all meaningful string values from both JSON blobs.
+
+    Returns a single space-separated string suitable for trigram search,
+    or None if no meaningful text was found.
+    """
+    seen: set[str] = set()
+    values: list[str] = []
+
+    def _walk(obj: object) -> None:
+        if isinstance(obj, dict):
+            for val in obj.values():
+                _walk(val)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+        elif isinstance(obj, str) and not _is_noise(obj):
+            lower = obj.lower()
+            if lower not in seen:
+                seen.add(lower)
+                values.append(obj)
+
+    _walk(prompt)
+    _walk(workflow)
+    return " ".join(values) if values else None
 
 
 def get_image_dimensions(file_path: Path) -> tuple[int | None, int | None]:

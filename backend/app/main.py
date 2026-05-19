@@ -8,19 +8,51 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from sqlalchemy import text
+
 from app.api.media import router as media_router
 from app.api.scan import router as scan_router
 from app.config import settings
 from app.database import async_session, engine
-from app.models.media import Base
+from app.models.media import Base, MediaFile
+from app.services.metadata import flatten_json_values
 from app.services.scanner import scan_and_ingest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+async def _backfill_search_text() -> None:
+    """Populate workflow_search_text for rows that have JSONB metadata but no search text."""
+    from sqlalchemy import or_, select
+
+    async with async_session() as db:
+        try:
+            query = select(MediaFile).where(
+                MediaFile.workflow_search_text.is_(None),
+                or_(
+                    MediaFile.metadata_prompt.isnot(None),
+                    MediaFile.metadata_workflow.isnot(None),
+                ),
+            )
+            result = await db.execute(query)
+            rows = result.scalars().all()
+            if not rows:
+                return
+            logger.info("Backfilling workflow_search_text for %d rows", len(rows))
+            for row in rows:
+                row.workflow_search_text = flatten_json_values(
+                    row.metadata_prompt, row.metadata_workflow
+                )
+            await db.commit()
+            logger.info("Backfill complete")
+        except Exception:
+            logger.error("Backfill failed", exc_info=True)
+
+
 async def _run_initial_scan() -> None:
     """Run the initial media scan as a background task."""
+    await _backfill_search_text()
     async with async_session() as db:
         try:
             stats = await scan_and_ingest(db)
@@ -33,6 +65,7 @@ async def _run_initial_scan() -> None:
 async def lifespan(app: FastAPI):
     # Create tables on startup
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created")
 
