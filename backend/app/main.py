@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from sqlalchemy import text
+
 from app.api.media import router as media_router
 from app.api.scan import router as scan_router
 from app.config import settings
@@ -63,6 +65,7 @@ async def _run_initial_scan() -> None:
 async def lifespan(app: FastAPI):
     # Create tables on startup
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created")
 
