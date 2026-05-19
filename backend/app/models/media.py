@@ -43,6 +43,8 @@ class MediaFile(Base):
     seed: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     lora_names: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
+    workflow_search_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     file_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     file_modified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -57,4 +59,10 @@ class MediaFile(Base):
     __table_args__ = (
         Index("ix_media_files_media_type", "media_type"),
         Index("ix_media_files_file_created_at", "file_created_at"),
+        Index(
+            "ix_media_files_workflow_search_trgm",
+            "workflow_search_text",
+            postgresql_using="gin",
+            postgresql_ops={"workflow_search_text": "gin_trgm_ops"},
+        ),
     )

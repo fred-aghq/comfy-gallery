@@ -10,6 +10,7 @@ from app.services.metadata import (
     extract_metadata,
     extract_png_metadata,
     extract_video_metadata,
+    flatten_json_values,
     get_image_dimensions,
     get_video_dimensions,
     parse_searchable_fields,
@@ -448,3 +449,77 @@ class TestSanitizeJson:
         prompt, workflow = extract_png_metadata(img_path)
         assert prompt == {"1": {"inputs": {"value": None}}}
         assert workflow == {"nodes": [{"pos": [None, None]}]}
+
+
+# ---------------------------------------------------------------------------
+# flatten_json_values
+# ---------------------------------------------------------------------------
+
+class TestFlattenJsonValues:
+    def test_none_inputs(self):
+        assert flatten_json_values(None, None) is None
+
+    def test_empty_dicts(self):
+        assert flatten_json_values({}, {}) is None
+
+    def test_extracts_string_values(self):
+        prompt = {
+            "4": {
+                "class_type": "CheckpointLoaderSimple",
+                "inputs": {"ckpt_name": "realisticVisionV51.safetensors"},
+            },
+            "6": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "a beautiful sunset"},
+            },
+        }
+        result = flatten_json_values(prompt, None)
+        assert result is not None
+        assert "CheckpointLoaderSimple" in result
+        assert "realisticVisionV51.safetensors" in result
+        assert "CLIPTextEncode" in result
+        assert "a beautiful sunset" in result
+
+    def test_filters_uuids(self):
+        prompt = {
+            "1": {
+                "class_type": "TestNode",
+                "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            },
+        }
+        result = flatten_json_values(prompt, None)
+        assert result is not None
+        assert "TestNode" in result
+        assert "a1b2c3d4" not in result
+
+    def test_filters_short_strings(self):
+        prompt = {"1": {"class_type": "TestNode", "x": "a"}}
+        result = flatten_json_values(prompt, None)
+        assert "TestNode" in result
+        # Single char "a" should be filtered
+        assert result == "TestNode"
+
+    def test_filters_numeric_strings(self):
+        prompt = {"1": {"class_type": "TestNode", "val": "42.5"}}
+        result = flatten_json_values(prompt, None)
+        assert "TestNode" in result
+        assert "42.5" not in result
+
+    def test_deduplicates_case_insensitive(self):
+        prompt = {"1": {"class_type": "KSampler"}, "2": {"class_type": "KSampler"}}
+        result = flatten_json_values(prompt, None)
+        assert result == "KSampler"
+
+    def test_combines_prompt_and_workflow(self):
+        prompt = {"1": {"class_type": "KSampler"}}
+        workflow = {"nodes": [{"type": "CLIPTextEncode"}]}
+        result = flatten_json_values(prompt, workflow)
+        assert "KSampler" in result
+        assert "CLIPTextEncode" in result
+
+    def test_nested_lists(self):
+        workflow = {"nodes": [{"widgets_values": ["euler", "normal", "fixed"]}]}
+        result = flatten_json_values(None, workflow)
+        assert "euler" in result
+        assert "normal" in result
+        assert "fixed" in result

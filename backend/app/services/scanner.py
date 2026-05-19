@@ -16,6 +16,7 @@ from app.services.metadata import (
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
     extract_metadata,
+    flatten_json_values,
     get_image_dimensions,
     get_video_dimensions,
     parse_searchable_fields,
@@ -82,6 +83,7 @@ def _process_file(file_path: Path) -> dict:
     else:
         width, height = get_video_dimensions(file_path)
     thumbnail_path = generate_thumbnail(file_path, media_type)
+    search_text = flatten_json_values(prompt, workflow)
     return {
         "ext": ext,
         "media_type": media_type,
@@ -91,6 +93,7 @@ def _process_file(file_path: Path) -> dict:
         "width": width,
         "height": height,
         "thumbnail_path": thumbnail_path,
+        "workflow_search_text": search_text,
     }
 
 
@@ -152,6 +155,7 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
                     existing.steps = info["searchable"]["steps"]
                     existing.seed = info["searchable"]["seed"]
                     existing.lora_names = info["searchable"]["lora_names"]
+                    existing.workflow_search_text = info["workflow_search_text"]
                     existing.file_modified_at = file_mtime
                 stats["updated"] += 1
                 continue
@@ -178,6 +182,7 @@ async def scan_and_ingest(db: AsyncSession) -> dict:
                 steps=info["searchable"]["steps"],
                 seed=info["searchable"]["seed"],
                 lora_names=info["searchable"]["lora_names"],
+                workflow_search_text=info["workflow_search_text"],
                 file_created_at=datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc),
                 file_modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
             )

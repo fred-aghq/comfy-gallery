@@ -73,7 +73,7 @@ async def list_media(
         count_query = count_query.where(MediaFile.file_path.startswith(folder))
 
     if search:
-        search_filter = MediaFile.positive_prompt.ilike(f"%{search}%")
+        search_filter = MediaFile.workflow_search_text.ilike(f"%{search}%")
         query = query.where(search_filter)
         count_query = count_query.where(search_filter)
 

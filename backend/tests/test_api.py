@@ -25,6 +25,7 @@ def _make_media(
     file_size: int = 1000,
     width: int | None = 512,
     height: int | None = 512,
+    workflow_search_text: str | None = None,
 ) -> MediaFile:
     return MediaFile(
         file_path=file_path,
@@ -38,6 +39,7 @@ def _make_media(
         checkpoint_name=checkpoint_name,
         sampler_name=sampler_name,
         seed=seed,
+        workflow_search_text=workflow_search_text,
         file_created_at=datetime.now(timezone.utc),
         file_modified_at=datetime.now(timezone.utc),
     )
@@ -115,15 +117,19 @@ async def seeded_db(db_engine):
     async with session_factory() as session:
         items = [
             _make_media("folder_a/img1.png", "img1.png", positive_prompt="a sunset landscape",
-                        checkpoint_name="sd_xl_base", sampler_name="euler", seed=42),
+                        checkpoint_name="sd_xl_base", sampler_name="euler", seed=42,
+                        workflow_search_text="a sunset landscape sd_xl_base euler CheckpointLoaderSimple KSampler"),
             _make_media("folder_a/img2.png", "img2.png", positive_prompt="a portrait photo",
-                        checkpoint_name="sd_xl_base", sampler_name="dpmpp_2m", seed=100),
+                        checkpoint_name="sd_xl_base", sampler_name="dpmpp_2m", seed=100,
+                        workflow_search_text="a portrait photo sd_xl_base dpmpp_2m CheckpointLoaderSimple KSampler"),
             _make_media("folder_b/img3.png", "img3.png", positive_prompt="abstract art",
-                        checkpoint_name="deliberate_v3", sampler_name="euler"),
+                        checkpoint_name="deliberate_v3", sampler_name="euler",
+                        workflow_search_text="abstract art deliberate_v3 euler CheckpointLoaderSimple KSampler"),
             _make_media("folder_b/video1.mp4", "video1.mp4", media_type=MediaType.VIDEO,
                         file_size=5000),
             _make_media("img4.png", "img4.png", positive_prompt="night city landscape",
-                        seed=721897303308196),
+                        seed=721897303308196,
+                        workflow_search_text="night city landscape CLIPTextEncode"),
         ]
         for item in items:
             session.add(item)
@@ -200,8 +206,12 @@ class TestListMedia:
         data = resp.json()
         assert resp.status_code == 200
         assert data["pagination"]["total"] == 2
-        for item in data["items"]:
-            assert "landscape" in item["positive_prompt"].lower()
+
+    async def test_search_by_node_type(self, app_client, seeded_db):
+        resp = await app_client.get("/api/media?search=CheckpointLoaderSimple")
+        data = resp.json()
+        assert resp.status_code == 200
+        assert data["pagination"]["total"] == 3
 
     async def test_filter_by_checkpoint(self, app_client, seeded_db):
         resp = await app_client.get("/api/media?checkpoint=sd_xl_base")
